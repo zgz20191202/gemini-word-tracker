@@ -1,4 +1,4 @@
-/* Content Script - Robust DOM-based Tracker */
+/* Content Script - Multilingual DOM-based Tracker */
 
 const HARRY_POTTER_1_WORDS = 76944;
 
@@ -7,10 +7,25 @@ function getTodayKey() {
   return `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}`;
 }
 
+/**
+ * Robust word counter for English, Chinese, Japanese, and Korean.
+ * - English/Latin: Counts words separated by spaces/punctuation.
+ * - CJK: Counts each character as a "word" (standard for metrics).
+ */
 function countWords(str) {
   if (!str || typeof str !== 'string') return 0;
-  const matches = str.match(/\b\w+\b/g);
-  return matches ? matches.length : 0;
+  
+  // Latin/English/Numeric words
+  const latinMatches = str.match(/[a-zA-Z0-9\u00C0-\u017F]+/g) || [];
+  
+  // CJK characters (each char is a word)
+  // \u4e00-\u9fa5 : Chinese
+  // \u3040-\u309f : Hiragana
+  // \u30a0-\u30ff : Katakana
+  // \uac00-\ud7af : Hangul
+  const cjkMatches = str.match(/[\u4e00-\u9fa5]|[\u3040-\u309f]|[\u30a0-\u30ff]|[\uac00-\ud7af]/g) || [];
+  
+  return latinMatches.length + cjkMatches.length;
 }
 
 const IGNORE_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'PATH', 'IFRAME', 'BUTTON'];
@@ -18,7 +33,6 @@ const processedTextNodes = new WeakMap();
 
 let dailyInput = 0;
 let dailyRead = 0;
-let maxUnsentInputWords = 0;
 
 let isNavigating = true;
 let currentPath = window.location.pathname;
@@ -30,11 +44,10 @@ let inputEl, readEl, analogyEl;
 
 function updateWidget() {
   if (!widget) return;
-  const displayedInput = dailyInput + maxUnsentInputWords;
-  if (inputEl) inputEl.textContent = displayedInput.toLocaleString();
-  if (readEl) readEl.textContent = dailyRead.toLocaleString();
+  inputEl.textContent = dailyInput.toLocaleString();
+  readEl.textContent = dailyRead.toLocaleString();
   const ratio = dailyRead / HARRY_POTTER_1_WORDS;
-  if (analogyEl) analogyEl.textContent = `${ratio.toFixed(4)}x Harry Potter 1`;
+  analogyEl.textContent = `${ratio.toFixed(4)}x Harry Potter 1`;
 }
 
 function initUI() {
@@ -76,12 +89,9 @@ function initUI() {
 
 initUI();
 
-// Listen for updates from popup (e.g., toggling widget visibility)
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local') {
-    if (changes.showWidget && widget) {
-      widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
-    }
+  if (area === 'local' && changes.showWidget && widget) {
+    widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
   }
 });
 
@@ -97,40 +107,39 @@ function saveData() {
   chrome.storage.local.set(updateObj);
 }
 
-// ----------------- Input Tracking -----------------
+// ----------------- Message Detection -----------------
 
-document.addEventListener('input', (e) => {
-  const target = e.target;
-  if (target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
-    const text = target.textContent || target.value || '';
-    const words = countWords(text);
-    
-    if (words > maxUnsentInputWords) {
-      maxUnsentInputWords = words;
-    }
-    
-    // Commit if the user clears the input box (e.g. hits send)
-    if (words === 0 && maxUnsentInputWords > 0) {
-      dailyInput += maxUnsentInputWords;
-      maxUnsentInputWords = 0;
-      saveData();
-    }
-    
-    updateWidget();
-  }
-});
+/**
+ * Check if a text node belongs to a User Message bubble.
+ */
+function isUserMessage(node) {
+  const parent = node.parentElement;
+  if (!parent) return false;
+  // Gemini selectors for user prompts
+  return !!(
+    parent.closest('user-query') || 
+    parent.closest('.query-content') || 
+    parent.closest('.user-query')
+  );
+}
 
-window.addEventListener('beforeunload', () => {
-  if (maxUnsentInputWords > 0) {
-    dailyInput += maxUnsentInputWords;
-    maxUnsentInputWords = 0;
-    saveData();
-  }
-});
+/**
+ * Check if a text node belongs to an AI Response bubble.
+ */
+function isAiMessage(node) {
+  const parent = node.parentElement;
+  if (!parent) return false;
+  // Gemini selectors for AI responses
+  return !!(
+    parent.closest('model-response') || 
+    parent.closest('.model-response-text') || 
+    parent.closest('.markdown') ||
+    parent.closest('.message-content')
+  );
+}
 
 // ----------------- Output Tracking -----------------
 
-// Marks existing nodes on page load or after a thread switch so we don't count history.
 function markExistingNodes() {
   const target = document.body || document.documentElement;
   if (!target) return;
@@ -143,14 +152,12 @@ function markExistingNodes() {
 
 function handleNavigation() {
   isNavigating = true;
-  // Allow time for history to render before we mark them as processed
   setTimeout(() => {
     markExistingNodes();
     isNavigating = false;
   }, 2000);
 }
 
-// Poll for SPA URL changes
 setInterval(() => {
   if (window.location.pathname !== currentPath) {
     currentPath = window.location.pathname;
@@ -165,13 +172,17 @@ window.addEventListener('popstate', () => {
   }
 });
 
-handleNavigation(); // Trigger on initial load
+handleNavigation();
 
 function handleTextNode(node) {
   const parent = node.parentElement;
   if (!parent) return;
   if (IGNORE_TAGS.includes(parent.tagName)) return;
-  if (parent.isContentEditable || parent.tagName === 'TEXTAREA' || parent.tagName === 'INPUT') return;
+  
+  // EXCLUDE THE TYPING BOX (ContentEditable)
+  if (parent.isContentEditable || parent.tagName === 'TEXTAREA' || parent.tagName === 'INPUT' || parent.closest('[contenteditable="true"]')) {
+    return;
+  }
 
   const text = node.nodeValue;
   const words = countWords(text);
@@ -179,10 +190,19 @@ function handleTextNode(node) {
   
   if (words > prevWords) {
     const delta = words - prevWords;
-    dailyRead += delta;
-    processedTextNodes.set(node, words);
-    saveData();
-    updateWidget();
+    
+    // DIFFERENTIATE: Sent vs Read
+    if (isUserMessage(node)) {
+      dailyInput += delta;
+      processedTextNodes.set(node, words);
+      saveData();
+      updateWidget();
+    } else if (isAiMessage(node)) {
+      dailyRead += delta;
+      processedTextNodes.set(node, words);
+      saveData();
+      updateWidget();
+    }
   }
 }
 
