@@ -31,14 +31,15 @@ let inputEl, readEl, analogyEl;
 function updateWidget() {
   if (!widget) return;
   const displayedInput = dailyInput + maxUnsentInputWords;
-  inputEl.textContent = displayedInput.toLocaleString();
-  readEl.textContent = dailyRead.toLocaleString();
+  if (inputEl) inputEl.textContent = displayedInput.toLocaleString();
+  if (readEl) readEl.textContent = dailyRead.toLocaleString();
   const ratio = dailyRead / HARRY_POTTER_1_WORDS;
-  analogyEl.textContent = `${ratio.toFixed(4)}x Harry Potter 1`;
+  if (analogyEl) analogyEl.textContent = `${ratio.toFixed(4)}x Harry Potter 1`;
 }
 
 function initUI() {
-  if (!document.body) {
+  const targetNode = document.documentElement || document.body;
+  if (!targetNode) {
     requestAnimationFrame(initUI);
     return;
   }
@@ -53,7 +54,7 @@ function initUI() {
     <div class="gwt-stat">Read: <span id="gwt-read">0</span></div>
     <div class="gwt-analogy" id="gwt-analogy">0.00x Harry Potter 1</div>
   `;
-  document.body.appendChild(widget);
+  targetNode.appendChild(widget);
 
   inputEl = document.getElementById('gwt-input');
   readEl = document.getElementById('gwt-read');
@@ -131,7 +132,9 @@ window.addEventListener('beforeunload', () => {
 
 // Marks existing nodes on page load or after a thread switch so we don't count history.
 function markExistingNodes() {
-  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+  const target = document.body || document.documentElement;
+  if (!target) return;
+  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null, false);
   let textNode;
   while ((textNode = walker.nextNode())) {
     processedTextNodes.set(textNode, countWords(textNode.nodeValue));
@@ -205,13 +208,16 @@ const observer = new MutationObserver((mutations) => {
   });
 });
 
-// Wait briefly for the body to exist before observing
-setTimeout(() => {
-  if (document.body) {
-    observer.observe(document.body, {
+function startObserver() {
+  const target = document.body || document.documentElement;
+  if (target) {
+    observer.observe(target, {
       childList: true,
       characterData: true,
       subtree: true
     });
+  } else {
+    setTimeout(startObserver, 100);
   }
-}, 100);
+}
+startObserver();
