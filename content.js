@@ -1,4 +1,4 @@
-/* Content Script */
+/* Content Script - Robust DOM-based Tracker */
 
 const HARRY_POTTER_1_WORDS = 76944;
 
@@ -7,30 +7,37 @@ function getTodayKey() {
   return `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}`;
 }
 
-// Inject `inject.js` into the page
-const s = document.createElement('script');
-s.src = chrome.runtime.getURL('inject.js');
-s.onload = function() {
-    this.remove();
-};
-(document.head || document.documentElement).appendChild(s);
+function countWords(str) {
+  if (!str || typeof str !== 'string') return 0;
+  const matches = str.match(/\b\w+\b/g);
+  return matches ? matches.length : 0;
+}
 
-// Initial Load
+const IGNORE_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'PATH', 'IFRAME', 'BUTTON'];
+const processedTextNodes = new WeakMap();
+
 let dailyInput = 0;
 let dailyRead = 0;
+let maxUnsentInputWords = 0;
+
+let isNavigating = true;
+let currentPath = window.location.pathname;
+
 let widget = null;
 let inputEl, readEl, analogyEl;
 
+// ----------------- Widget UI -----------------
+
 function updateWidget() {
   if (!widget) return;
-  inputEl.textContent = dailyInput.toLocaleString();
+  const displayedInput = dailyInput + maxUnsentInputWords;
+  inputEl.textContent = displayedInput.toLocaleString();
   readEl.textContent = dailyRead.toLocaleString();
   const ratio = dailyRead / HARRY_POTTER_1_WORDS;
   analogyEl.textContent = `${ratio.toFixed(4)}x Harry Potter 1`;
 }
 
 function initUI() {
-  // Wait until body exists to append the widget
   if (!document.body) {
     requestAnimationFrame(initUI);
     return;
@@ -62,56 +69,149 @@ function initUI() {
     if (result.showWidget === false) {
       widget.style.display = 'none';
     }
-    
     updateWidget();
   });
 }
 
 initUI();
 
-// Listen for updates from popup
+// Listen for updates from popup (e.g., toggling widget visibility)
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local') {
-    const todayKey = getTodayKey();
-    
-    // Handle toggle visibility
     if (changes.showWidget && widget) {
       widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
     }
-    
-    // Sync counts if changed in another tab or by new message
-    if (changes[todayKey] && widget) {
-      dailyInput = changes[todayKey].newValue.input || 0;
-      dailyRead = changes[todayKey].newValue.read || 0;
-      updateWidget();
-    }
   }
 });
 
-// Listen to injected script messages
-window.addEventListener('message', function(event) {
-  if (event.source !== window || !event.data || event.data.type !== 'GEMINI_WORD_TRACKER') {
-    return;
-  }
+// ----------------- Data Storage -----------------
 
-  const { direction, wordCount } = event.data;
+function saveData() {
   const todayKey = getTodayKey();
-  
-  chrome.storage.local.get([todayKey], (result) => {
-    let stats = result[todayKey] || { input: 0, read: 0 };
+  const updateObj = {};
+  updateObj[todayKey] = {
+    input: dailyInput,
+    read: dailyRead
+  };
+  chrome.storage.local.set(updateObj);
+}
+
+// ----------------- Input Tracking -----------------
+
+document.addEventListener('input', (e) => {
+  const target = e.target;
+  if (target.isContentEditable || target.tagName === 'TEXTAREA' || target.tagName === 'INPUT') {
+    const text = target.textContent || target.value || '';
+    const words = countWords(text);
     
-    if (direction === 'input') {
-      stats.input += wordCount;
-      dailyInput = stats.input;
-    } else if (direction === 'read') {
-      stats.read += wordCount;
-      dailyRead = stats.read;
+    if (words > maxUnsentInputWords) {
+      maxUnsentInputWords = words;
     }
     
-    const updateObj = {};
-    updateObj[todayKey] = stats;
-    chrome.storage.local.set(updateObj);
+    // Commit if the user clears the input box (e.g. hits send)
+    if (words === 0 && maxUnsentInputWords > 0) {
+      dailyInput += maxUnsentInputWords;
+      maxUnsentInputWords = 0;
+      saveData();
+    }
     
     updateWidget();
+  }
+});
+
+window.addEventListener('beforeunload', () => {
+  if (maxUnsentInputWords > 0) {
+    dailyInput += maxUnsentInputWords;
+    maxUnsentInputWords = 0;
+    saveData();
+  }
+});
+
+// ----------------- Output Tracking -----------------
+
+// Marks existing nodes on page load or after a thread switch so we don't count history.
+function markExistingNodes() {
+  const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+  let textNode;
+  while ((textNode = walker.nextNode())) {
+    processedTextNodes.set(textNode, countWords(textNode.nodeValue));
+  }
+}
+
+function handleNavigation() {
+  isNavigating = true;
+  // Allow time for history to render before we mark them as processed
+  setTimeout(() => {
+    markExistingNodes();
+    isNavigating = false;
+  }, 2000);
+}
+
+// Poll for SPA URL changes
+setInterval(() => {
+  if (window.location.pathname !== currentPath) {
+    currentPath = window.location.pathname;
+    handleNavigation();
+  }
+}, 500);
+
+window.addEventListener('popstate', () => {
+  if (window.location.pathname !== currentPath) {
+    currentPath = window.location.pathname;
+    handleNavigation();
+  }
+});
+
+handleNavigation(); // Trigger on initial load
+
+function handleTextNode(node) {
+  const parent = node.parentElement;
+  if (!parent) return;
+  if (IGNORE_TAGS.includes(parent.tagName)) return;
+  if (parent.isContentEditable || parent.tagName === 'TEXTAREA' || parent.tagName === 'INPUT') return;
+
+  const text = node.nodeValue;
+  const words = countWords(text);
+  const prevWords = processedTextNodes.get(node) || 0;
+  
+  if (words > prevWords) {
+    const delta = words - prevWords;
+    dailyRead += delta;
+    processedTextNodes.set(node, words);
+    saveData();
+    updateWidget();
+  }
+}
+
+const observer = new MutationObserver((mutations) => {
+  mutations.forEach(mutation => {
+    if (isNavigating) return;
+
+    if (mutation.type === 'characterData') {
+      handleTextNode(mutation.target);
+    } else if (mutation.type === 'childList') {
+      mutation.addedNodes.forEach(node => {
+        if (node.nodeType === Node.TEXT_NODE) {
+          handleTextNode(node);
+        } else if (node.nodeType === Node.ELEMENT_NODE) {
+          const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
+          let textNode;
+          while ((textNode = walker.nextNode())) {
+            handleTextNode(textNode);
+          }
+        }
+      });
+    }
   });
 });
+
+// Wait briefly for the body to exist before observing
+setTimeout(() => {
+  if (document.body) {
+    observer.observe(document.body, {
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
+  }
+}, 100);
