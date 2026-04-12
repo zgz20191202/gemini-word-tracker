@@ -1,4 +1,4 @@
-/* Content Script - Multilingual DOM-based Tracker */
+/* Content Script - Refined Multilingual Tracker */
 
 const HARRY_POTTER_1_WORDS = 76944;
 
@@ -7,34 +7,23 @@ function getTodayKey() {
   return `${today.getFullYear()}-${(today.getMonth() + 1).toString().padStart(2, '0')}-${today.getDate().toString().padStart(2, '0')}`;
 }
 
-/**
- * Checks if the Chrome extension context is still valid.
- */
 function isContextValid() {
   return typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
 }
 
-/**
- * Robust word counter for English, Chinese, Japanese, and Korean.
- */
 function countWords(str) {
   if (!str || typeof str !== 'string') return 0;
-  
-  // Latin/English/Numeric words
+  // Use a more strict word counting regex to avoid overcounting punctuation/symbols
   const latinMatches = str.match(/[a-zA-Z0-9\u00C0-\u017F]+/g) || [];
-  
-  // CJK characters (each char is a word)
   const cjkMatches = str.match(/[\u4e00-\u9fa5]|[\u3040-\u309f]|[\u30a0-\u30ff]|[\uac00-\ud7af]/g) || [];
-  
   return latinMatches.length + cjkMatches.length;
 }
 
-const IGNORE_TAGS = ['SCRIPT', 'STYLE', 'NOSCRIPT', 'SVG', 'PATH', 'IFRAME', 'BUTTON'];
-const processedTextNodes = new WeakMap();
+// Track elements we've already counted to avoid double-counting on re-renders
+const countedMessages = new WeakMap();
 
 let dailyInput = 0;
 let dailyRead = 0;
-
 let isNavigating = true;
 let currentPath = window.location.pathname;
 
@@ -81,10 +70,7 @@ function initUI() {
         dailyInput = result[todayKey].input || 0;
         dailyRead = result[todayKey].read || 0;
       }
-      
-      if (result.showWidget === false) {
-        widget.style.display = 'none';
-      }
+      if (result.showWidget === false) widget.style.display = 'none';
       updateWidget();
     });
   }
@@ -100,59 +86,53 @@ if (isContextValid()) {
   });
 }
 
-// ----------------- Data Storage -----------------
-
 function saveData() {
   if (!isContextValid()) return;
-  
   const todayKey = getTodayKey();
   const updateObj = {};
-  updateObj[todayKey] = {
-    input: dailyInput,
-    read: dailyRead
-  };
+  updateObj[todayKey] = { input: dailyInput, read: dailyRead };
   chrome.storage.local.set(updateObj);
 }
 
-// ----------------- Message Detection -----------------
+// ----------------- Tracking Logic -----------------
 
-function isUserMessage(node) {
-  const parent = node.parentElement;
-  if (!parent) return false;
-  return !!(
-    parent.closest('user-query') || 
-    parent.closest('.query-content') || 
-    parent.closest('.user-query')
-  );
-}
-
-function isAiMessage(node) {
-  const parent = node.parentElement;
-  if (!parent) return false;
-  return !!(
-    parent.closest('model-response') || 
-    parent.closest('.model-response-text') || 
-    parent.closest('.markdown') ||
-    parent.closest('.message-content')
-  );
-}
-
-// ----------------- Output Tracking -----------------
-
-function markExistingNodes() {
-  const target = document.body || document.documentElement;
-  if (!target) return;
-  const walker = document.createTreeWalker(target, NodeFilter.SHOW_TEXT, null, false);
-  let textNode;
-  while ((textNode = walker.nextNode())) {
-    processedTextNodes.set(textNode, countWords(textNode.nodeValue));
+function processMessage(element, type) {
+  // Use a cleaner text extraction to avoid counting UI text (like "Copy", "Share", etc)
+  // Gemini puts message content in specific sub-elements
+  let contentElement = element;
+  if (type === 'read') {
+    contentElement = element.querySelector('.markdown') || element.querySelector('.message-content') || element;
+  } else {
+    contentElement = element.querySelector('.query-content') || element;
   }
+
+  const text = contentElement.innerText || "";
+  const words = countWords(text);
+  const prevCount = countedMessages.get(element) || 0;
+
+  if (words > prevCount) {
+    const delta = words - prevCount;
+    if (type === 'asked') dailyInput += delta;
+    else dailyRead += delta;
+    
+    countedMessages.set(element, words);
+    saveData();
+    updateWidget();
+  }
+}
+
+// Mark history to ignore it
+function seedHistory() {
+  document.querySelectorAll('user-query, model-response').forEach(el => {
+    const text = el.innerText || "";
+    countedMessages.set(el, countWords(text));
+  });
 }
 
 function handleNavigation() {
   isNavigating = true;
   setTimeout(() => {
-    markExistingNodes();
+    seedHistory();
     isNavigating = false;
   }, 2000);
 }
@@ -162,79 +142,43 @@ setInterval(() => {
     currentPath = window.location.pathname;
     handleNavigation();
   }
-}, 500);
-
-window.addEventListener('popstate', () => {
-  if (window.location.pathname !== currentPath) {
-    currentPath = window.location.pathname;
-    handleNavigation();
-  }
-});
+}, 1000);
 
 handleNavigation();
 
-function handleTextNode(node) {
-  const parent = node.parentElement;
-  if (!parent) return;
-  if (IGNORE_TAGS.includes(parent.tagName)) return;
-  
-  if (parent.isContentEditable || parent.tagName === 'TEXTAREA' || parent.tagName === 'INPUT' || parent.closest('[contenteditable="true"]')) {
-    return;
-  }
-
-  const text = node.nodeValue;
-  const words = countWords(text);
-  const prevWords = processedTextNodes.get(node) || 0;
-  
-  if (words > prevWords) {
-    const delta = words - prevWords;
-    
-    if (isUserMessage(node)) {
-      dailyInput += delta;
-      processedTextNodes.set(node, words);
-      saveData();
-      updateWidget();
-    } else if (isAiMessage(node)) {
-      dailyRead += delta;
-      processedTextNodes.set(node, words);
-      saveData();
-      updateWidget();
-    }
-  }
-}
-
 const observer = new MutationObserver((mutations) => {
-  mutations.forEach(mutation => {
-    if (isNavigating) return;
+  if (isNavigating) return;
 
-    if (mutation.type === 'characterData') {
-      handleTextNode(mutation.target);
-    } else if (mutation.type === 'childList') {
-      mutation.addedNodes.forEach(node => {
-        if (node.nodeType === Node.TEXT_NODE) {
-          handleTextNode(node);
-        } else if (node.nodeType === Node.ELEMENT_NODE) {
-          const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null, false);
-          let textNode;
-          while ((textNode = walker.nextNode())) {
-            handleTextNode(textNode);
-          }
+  mutations.forEach(mutation => {
+    mutation.addedNodes.forEach(node => {
+      if (node.nodeType === Node.ELEMENT_NODE) {
+        // Check if the added node is a message or contains messages
+        if (node.tagName === 'USER-QUERY' || node.classList.contains('user-query')) {
+          processMessage(node, 'asked');
+        } else if (node.tagName === 'MODEL-RESPONSE' || node.classList.contains('model-response')) {
+          processMessage(node, 'read');
+        } else {
+          node.querySelectorAll('user-query, model-response').forEach(el => {
+            const type = el.tagName === 'USER-QUERY' ? 'asked' : 'read';
+            processMessage(el, type);
+          });
         }
-      });
+      }
+    });
+
+    // Handle streaming updates to existing responses
+    if (mutation.type === 'characterData' || mutation.type === 'childList') {
+      const target = mutation.target.parentElement;
+      if (target) {
+        const aiResponse = target.closest('model-response');
+        if (aiResponse) processMessage(aiResponse, 'read');
+      }
     }
   });
 });
 
-function startObserver() {
-  const target = document.body || document.documentElement;
-  if (target) {
-    observer.observe(target, {
-      childList: true,
-      characterData: true,
-      subtree: true
-    });
-  } else {
-    setTimeout(startObserver, 100);
-  }
-}
-startObserver();
+observer.observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+  characterData: true
+});
