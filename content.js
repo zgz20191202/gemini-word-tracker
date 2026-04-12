@@ -8,9 +8,14 @@ function getTodayKey() {
 }
 
 /**
+ * Checks if the Chrome extension context is still valid.
+ */
+function isContextValid() {
+  return typeof chrome !== 'undefined' && chrome.runtime && !!chrome.runtime.id;
+}
+
+/**
  * Robust word counter for English, Chinese, Japanese, and Korean.
- * - English/Latin: Counts words separated by spaces/punctuation.
- * - CJK: Counts each character as a "word" (standard for metrics).
  */
 function countWords(str) {
   if (!str || typeof str !== 'string') return 0;
@@ -19,10 +24,6 @@ function countWords(str) {
   const latinMatches = str.match(/[a-zA-Z0-9\u00C0-\u017F]+/g) || [];
   
   // CJK characters (each char is a word)
-  // \u4e00-\u9fa5 : Chinese
-  // \u3040-\u309f : Hiragana
-  // \u30a0-\u30ff : Katakana
-  // \uac00-\ud7af : Hangul
   const cjkMatches = str.match(/[\u4e00-\u9fa5]|[\u3040-\u309f]|[\u30a0-\u30ff]|[\uac00-\ud7af]/g) || [];
   
   return latinMatches.length + cjkMatches.length;
@@ -63,7 +64,7 @@ function initUI() {
   widget.id = 'gemini-word-tracker-widget';
   widget.innerHTML = `
     <div class="gwt-header">Gemini Word Tracker</div>
-    <div class="gwt-stat">Sent: <span id="gwt-input">0</span></div>
+    <div class="gwt-stat">Asked: <span id="gwt-input">0</span></div>
     <div class="gwt-stat">Read: <span id="gwt-read">0</span></div>
     <div class="gwt-analogy" id="gwt-analogy">0.00x Harry Potter 1</div>
   `;
@@ -73,31 +74,37 @@ function initUI() {
   readEl = document.getElementById('gwt-read');
   analogyEl = document.getElementById('gwt-analogy');
 
-  chrome.storage.local.get(null, (result) => {
-    const todayKey = getTodayKey();
-    if (result[todayKey]) {
-      dailyInput = result[todayKey].input || 0;
-      dailyRead = result[todayKey].read || 0;
-    }
-    
-    if (result.showWidget === false) {
-      widget.style.display = 'none';
-    }
-    updateWidget();
-  });
+  if (isContextValid()) {
+    chrome.storage.local.get(null, (result) => {
+      const todayKey = getTodayKey();
+      if (result[todayKey]) {
+        dailyInput = result[todayKey].input || 0;
+        dailyRead = result[todayKey].read || 0;
+      }
+      
+      if (result.showWidget === false) {
+        widget.style.display = 'none';
+      }
+      updateWidget();
+    });
+  }
 }
 
 initUI();
 
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.showWidget && widget) {
-    widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
-  }
-});
+if (isContextValid()) {
+  chrome.storage.onChanged.addListener((changes, area) => {
+    if (area === 'local' && changes.showWidget && widget) {
+      widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
+    }
+  });
+}
 
 // ----------------- Data Storage -----------------
 
 function saveData() {
+  if (!isContextValid()) return;
+  
   const todayKey = getTodayKey();
   const updateObj = {};
   updateObj[todayKey] = {
@@ -109,13 +116,9 @@ function saveData() {
 
 // ----------------- Message Detection -----------------
 
-/**
- * Check if a text node belongs to a User Message bubble.
- */
 function isUserMessage(node) {
   const parent = node.parentElement;
   if (!parent) return false;
-  // Gemini selectors for user prompts
   return !!(
     parent.closest('user-query') || 
     parent.closest('.query-content') || 
@@ -123,13 +126,9 @@ function isUserMessage(node) {
   );
 }
 
-/**
- * Check if a text node belongs to an AI Response bubble.
- */
 function isAiMessage(node) {
   const parent = node.parentElement;
   if (!parent) return false;
-  // Gemini selectors for AI responses
   return !!(
     parent.closest('model-response') || 
     parent.closest('.model-response-text') || 
@@ -179,7 +178,6 @@ function handleTextNode(node) {
   if (!parent) return;
   if (IGNORE_TAGS.includes(parent.tagName)) return;
   
-  // EXCLUDE THE TYPING BOX (ContentEditable)
   if (parent.isContentEditable || parent.tagName === 'TEXTAREA' || parent.tagName === 'INPUT' || parent.closest('[contenteditable="true"]')) {
     return;
   }
@@ -191,7 +189,6 @@ function handleTextNode(node) {
   if (words > prevWords) {
     const delta = words - prevWords;
     
-    // DIFFERENTIATE: Sent vs Read
     if (isUserMessage(node)) {
       dailyInput += delta;
       processedTextNodes.set(node, words);

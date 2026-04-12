@@ -14,26 +14,28 @@ document.addEventListener('DOMContentLoaded', () => {
   const updateUI = (data) => {
     const todayKey = getTodayKey();
     const stats = data[todayKey] || { input: 0, read: 0 };
-    inputWordsEl.textContent = stats.input.toLocaleString();
-    readWordsEl.textContent = stats.read.toLocaleString();
+    if (inputWordsEl) inputWordsEl.textContent = stats.input.toLocaleString();
+    if (readWordsEl) readWordsEl.textContent = stats.read.toLocaleString();
     
     const ratio = stats.read / HARRY_POTTER_1_WORDS;
-    analogyEl.textContent = `${ratio.toFixed(4)}x of Harry Potter 1`;
+    if (analogyEl) analogyEl.textContent = `${ratio.toFixed(4)}x of Harry Potter 1`;
   };
 
-  chrome.storage.local.get(null, (result) => {
-    updateUI(result);
-    toggleWidget.checked = result.showWidget !== false; // default true
-  });
+  if (typeof chrome !== 'undefined' && chrome.storage) {
+    chrome.storage.local.get(null, (result) => {
+      updateUI(result);
+      toggleWidget.checked = result.showWidget !== false; // default true
+    });
 
-  toggleWidget.addEventListener('change', (e) => {
-    chrome.storage.local.set({ showWidget: e.target.checked });
-  });
+    toggleWidget.addEventListener('change', (e) => {
+      chrome.storage.local.set({ showWidget: e.target.checked });
+    });
 
-  // Listen for changes while popup is open
-  chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local') {
-      chrome.storage.local.get(null, updateUI);
-    }
-  });
+    // Listen for changes while popup is open
+    chrome.storage.onChanged.addListener((changes, area) => {
+      if (area === 'local') {
+        chrome.storage.local.get(null, updateUI);
+      }
+    });
+  }
 });
