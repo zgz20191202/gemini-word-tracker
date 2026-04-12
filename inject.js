@@ -6,27 +6,33 @@
 
   function countWords(str) {
     if (!str || typeof str !== 'string') return 0;
-    const matches = str.match(/\b\w+\b/g);
-    return matches ? matches.length : 0;
+    const words = str.trim().split(/\s+/);
+    return words.length > 0 && words[0] !== '' ? words.length : 0;
   }
 
   function processPayload(text, isInput) {
-    // This is a naive extraction since Google's API payload is obfuscated nested arrays.
-    // It extracts long strings that are likely the chat text.
     let words = 0;
     try {
-      const regex = /"([^"\\]*(?:\\.[^"\\]*)*)"/g;
+      let decodedText = text.replace(/\\u[\dA-F]{4}/gi, (match) => {
+          return String.fromCharCode(parseInt(match.replace(/\\u/g, ''), 16));
+      });
+
+      const regex = /"((?:[^"\\]|\\.)*)"/g;
       let match;
-      while ((match = regex.exec(text)) !== null) {
-        const str = match[1];
-        // Filter out short strings or likely JSON keys/IDs
+      let maxWords = 0;
+      while ((match = regex.exec(decodedText)) !== null) {
+        let str = match[1];
+        str = str.replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+        
         if (str.length > 20 && str.includes(' ')) {
-          words += countWords(str);
+           const currentWords = countWords(str);
+           if (currentWords > maxWords) {
+             maxWords = currentWords;
+           }
         }
       }
-    } catch (e) {
-      console.error("Error processing payload", e);
-    }
+      words = maxWords;
+    } catch (e) {}
     
     if (words > 0) {
       window.postMessage({
@@ -41,37 +47,68 @@
   window.fetch = async function(...args) {
     const url = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url ? args[0].url : '');
     
-    // Process Request Body (Input)
-    if (url.includes('/BardChatUi/') || url.includes('/GenerateAnswer') || url.includes('CreateConversation')) {
+    const isGeminiApi = url.includes('/BardChatUi/') || url.includes('StreamGenerate') || url.includes('generate');
+
+    if (isGeminiApi) {
       try {
         let body = '';
         if (args[1] && args[1].body) {
-          body = args[1].body;
-        } else if (args[0] && args[0].body) {
-          body = typeof args[0].text === 'function' ? await args[0].clone().text() : '';
+          body = typeof args[1].body === 'string' ? args[1].body : '';
+        } else if (args[0] && args[0].body && typeof args[0].clone === 'function') {
+          try {
+             const reqClone = args[0].clone();
+             body = await reqClone.text();
+          } catch(e) {}
         }
-        if (typeof body === 'string' && body.length > 0) {
-          processPayload(body, true);
+        
+        if (body.length > 0) {
+          try {
+             let decodedBody = decodeURIComponent(body.replace(/\+/g, ' '));
+             processPayload(decodedBody, true);
+          } catch(e) {
+             processPayload(body, true);
+          }
         }
       } catch (e) {}
     }
 
     const response = await originalFetch.apply(this, args);
     
-    // Process Response Body (Read)
-    if (url.includes('/BardChatUi/') || url.includes('/GenerateAnswer') || url.includes('CreateConversation')) {
+    if (isGeminiApi) {
       try {
         const clonedResponse = response.clone();
-        clonedResponse.text().then(text => {
-          processPayload(text, false);
-        }).catch(e => {});
+        if (clonedResponse.body) {
+          const reader = clonedResponse.body.getReader();
+          const decoder = new TextDecoder("utf-8");
+          let fullText = "";
+          
+          (async () => {
+            while (true) {
+              try {
+                const { value, done } = await reader.read();
+                if (value) {
+                  fullText += decoder.decode(value, { stream: !done });
+                }
+                if (done) {
+                  processPayload(fullText, false);
+                  break;
+                }
+              } catch(e) {
+                break;
+              }
+            }
+          })();
+        } else {
+          clonedResponse.text().then(text => {
+            processPayload(text, false);
+          }).catch(e => {});
+        }
       } catch(e) {}
     }
     
     return response;
   };
 
-  // Intercept XHR
   const originalOpen = originalXHR.prototype.open;
   const originalSend = originalXHR.prototype.send;
 
@@ -81,9 +118,16 @@
   };
 
   originalXHR.prototype.send = function(body) {
-    if (this._url && (this._url.includes('/BardChatUi/') || this._url.includes('/GenerateAnswer') || this._url.includes('CreateConversation'))) {
+    const isGeminiApi = this._url && (this._url.includes('/BardChatUi/') || this._url.includes('StreamGenerate') || this._url.includes('generate'));
+    
+    if (isGeminiApi) {
       if (body && typeof body === 'string') {
-        processPayload(body, true);
+         try {
+             let decodedBody = decodeURIComponent(body.replace(/\+/g, ' '));
+             processPayload(decodedBody, true);
+          } catch(e) {
+             processPayload(body, true);
+          }
       }
       this.addEventListener('load', function() {
         if (this.responseText) {
