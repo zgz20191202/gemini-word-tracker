@@ -1,0 +1,64 @@
+/* Widget Styles */
+#gemini-word-tracker-widget {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  width: 200px;
+  background-color: #ffffff;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 12px 16px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  z-index: 999999;
+  color: #202124;
+}
+
+/* Dark mode support */
+@media (prefers-color-scheme: dark) {
+  #gemini-word-tracker-widget {
+    background-color: #1e1e1e;
+    border-color: #333;
+    color: #e8eaed;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  }
+}
+
+.gwt-header {
+  font-size: 14px;
+  font-weight: bold;
+  margin-bottom: 8px;
+  color: #1a73e8;
+}
+
+@media (prefers-color-scheme: dark) {
+  .gwt-header {
+    color: #8ab4f8;
+  }
+}
+
+.gwt-stat {
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.gwt-stat span {
+  font-weight: 600;
+  float: right;
+}
+
+.gwt-analogy {
+  font-size: 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e0e0e0;
+  color: #5f6368;
+  text-align: center;
+}
+
+@media (prefers-color-scheme: dark) {
+  .gwt-analogy {
+    border-top-color: #333;
+    color: #9aa0a6;
+  }
+}

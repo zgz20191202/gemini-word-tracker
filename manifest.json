@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Word Tracker",
+  "version": "1.0.0",
+  "description": "Tracks daily words inputted to and read from Gemini Web UI, comparing it to reading books.",
+  "permissions": [
+    "storage",
+    "scripting"
+  ],
+  "host_permissions": [
+    "*://gemini.google.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://gemini.google.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": ["*://gemini.google.com/*"]
+    }
+  ]
+}

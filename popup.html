@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      width: 250px;
+      padding: 10px;
+      background-color: #f8f9fa;
+      color: #202124;
+    }
+    h3 {
+      margin-top: 0;
+      font-size: 16px;
+      color: #1a73e8;
+    }
+    .stat {
+      margin: 8px 0;
+      font-size: 14px;
+    }
+    .stat span {
+      font-weight: bold;
+    }
+    .toggle-container {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #ddd;
+    }
+    label {
+      font-size: 13px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <h3>Gemini Word Tracker</h3>
+  <div class="stat">Input Today: <span id="input-words">0</span></div>
+  <div class="stat">Read Today: <span id="read-words">0</span></div>
+  <div class="stat" style="font-size: 12px; color: #5f6368; margin-top: 8px;">
+    Analogy: <span id="analogy">0.00x of Harry Potter 1</span>
+  </div>
+  
+  <div class="toggle-container">
+    <label>
+      <input type="checkbox" id="toggle-widget" checked>
+      Show floating widget on page
+    </label>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
