@@ -19,13 +19,49 @@ function countWords(str) {
   return latinMatches.length + cjkMatches.length;
 }
 
+function getCleanText(element, type) {
+  if (!element) return "";
+  
+  let contentEl = element;
+  if (type === 'read') {
+      contentEl = element.querySelector('.markdown') || element.querySelector('.message-content') || element;
+  } else if (type === 'asked') {
+      contentEl = element.querySelector('.query-content') || element.querySelector('.message-content') || element;
+  }
+
+  const clone = contentEl.cloneNode(true);
+  // Remove UI elements like buttons, SVGs, hidden elements
+  const unwanted = clone.querySelectorAll('button, svg, img, [aria-hidden="true"], .visually-hidden, a');
+  unwanted.forEach(el => el.remove());
+
+  return clone.textContent || "";
+}
+
 // Track elements we've already counted to avoid double-counting on re-renders
 const countedMessages = new WeakMap();
 
 let dailyInput = 0;
 let dailyRead = 0;
-let isNavigating = true;
+
+// Track user interaction to differentiate history vs new queries
+let lastInteractionTime = 0;
+// Track whether we are expecting a new model response
+let isWaitingForResponse = false;
+
+document.addEventListener('mousedown', () => { lastInteractionTime = Date.now(); }, true);
+document.addEventListener('keydown', () => { lastInteractionTime = Date.now(); }, true);
+
+// Handle SPA navigation to prevent history from counting as recent user action
 let currentPath = window.location.pathname;
+let isNavigating = false;
+
+setInterval(() => {
+  if (window.location.pathname !== currentPath) {
+    currentPath = window.location.pathname;
+    isNavigating = true;
+    setTimeout(() => { isNavigating = false; }, 3000); // 3-second grace period for history to load
+  }
+}, 500);
 
 let widget = null;
 let inputEl, readEl, analogyEl;
@@ -80,104 +116,127 @@ initUI();
 
 if (isContextValid()) {
   chrome.storage.onChanged.addListener((changes, area) => {
-    if (area === 'local' && changes.showWidget && widget) {
-      widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
+    if (area === 'local') {
+      const todayKey = getTodayKey();
+      if (changes[todayKey] && changes[todayKey].newValue) {
+        // Sync local variables with storage to prevent overwriting from other tabs
+        dailyInput = changes[todayKey].newValue.input || 0;
+        dailyRead = changes[todayKey].newValue.read || 0;
+        updateWidget();
+      }
+      if (changes.showWidget && widget) {
+        widget.style.display = changes.showWidget.newValue ? 'block' : 'none';
+      }
     }
   });
 }
 
-function saveData() {
+function saveData(deltaInput = 0, deltaRead = 0) {
   if (!isContextValid()) return;
+  if (deltaInput === 0 && deltaRead === 0) return;
+  
   const todayKey = getTodayKey();
-  const updateObj = {};
-  updateObj[todayKey] = { input: dailyInput, read: dailyRead };
-  chrome.storage.local.set(updateObj);
+  
+  // Use get before set to ensure we don't overwrite concurrent saves
+  chrome.storage.local.get(todayKey, (result) => {
+    const currentData = result[todayKey] || { input: 0, read: 0 };
+    const newData = {
+      input: currentData.input + deltaInput,
+      read: currentData.read + deltaRead
+    };
+    
+    const updateObj = {};
+    updateObj[todayKey] = newData;
+    chrome.storage.local.set(updateObj);
+  });
 }
 
 // ----------------- Tracking Logic -----------------
 
-function processMessage(element, type) {
-  // Use a cleaner text extraction to avoid counting UI text (like "Copy", "Share", etc)
-  // Gemini puts message content in specific sub-elements
-  let contentElement = element;
-  if (type === 'read') {
-    contentElement = element.querySelector('.markdown') || element.querySelector('.message-content') || element;
-  } else {
-    contentElement = element.querySelector('.query-content') || element;
+function processNodeAddition(element, type) {
+  const text = getCleanText(element, type);
+  const words = countWords(text);
+  
+  // Save the current word count so future mutations only count the delta
+  countedMessages.set(element, words);
+
+  let deltaInput = 0;
+  let deltaRead = 0;
+
+  if (type === 'asked') {
+      // Check if this was a recent user action and not a navigation history load
+      if (!isNavigating && (Date.now() - lastInteractionTime < 5000)) {
+          deltaInput = words;
+          isWaitingForResponse = true;
+      }
+  } else if (type === 'read') {
+      if (isWaitingForResponse) {
+          deltaRead = words;
+          isWaitingForResponse = false;
+      }
   }
 
-  const text = contentElement.innerText || "";
+  saveData(deltaInput, deltaRead);
+}
+
+function processNodeMutation(element, type) {
+  const text = getCleanText(element, type);
   const words = countWords(text);
   const prevCount = countedMessages.get(element) || 0;
 
   if (words > prevCount) {
     const delta = words - prevCount;
-    if (type === 'asked') dailyInput += delta;
-    else dailyRead += delta;
-    
     countedMessages.set(element, words);
-    saveData();
-    updateWidget();
+    
+    if (type === 'asked') {
+        saveData(delta, 0);
+    } else {
+        saveData(0, delta);
+    }
   }
 }
-
-// Mark history to ignore it
-function seedHistory() {
-  document.querySelectorAll('user-query, model-response').forEach(el => {
-    const text = el.innerText || "";
-    countedMessages.set(el, countWords(text));
-  });
-}
-
-function handleNavigation() {
-  isNavigating = true;
-  setTimeout(() => {
-    seedHistory();
-    isNavigating = false;
-  }, 2000);
-}
-
-setInterval(() => {
-  if (window.location.pathname !== currentPath) {
-    currentPath = window.location.pathname;
-    handleNavigation();
-  }
-}, 1000);
-
-handleNavigation();
 
 const observer = new MutationObserver((mutations) => {
-  if (isNavigating) return;
-
   mutations.forEach(mutation => {
+    // Handle newly added nodes
     mutation.addedNodes.forEach(node => {
       if (node.nodeType === Node.ELEMENT_NODE) {
-        // Check if the added node is a message or contains messages
         if (node.tagName === 'USER-QUERY' || node.classList.contains('user-query')) {
-          processMessage(node, 'asked');
+          processNodeAddition(node, 'asked');
         } else if (node.tagName === 'MODEL-RESPONSE' || node.classList.contains('model-response')) {
-          processMessage(node, 'read');
+          processNodeAddition(node, 'read');
         } else {
-          node.querySelectorAll('user-query, model-response').forEach(el => {
-            const type = el.tagName === 'USER-QUERY' ? 'asked' : 'read';
-            processMessage(el, type);
-          });
+          node.querySelectorAll('user-query, .user-query').forEach(el => processNodeAddition(el, 'asked'));
+          node.querySelectorAll('model-response, .model-response').forEach(el => processNodeAddition(el, 'read'));
         }
       }
     });
 
-    // Handle streaming updates to existing responses
+    // Handle text updates to existing nodes (streaming or editing)
     if (mutation.type === 'characterData' || mutation.type === 'childList') {
-      const target = mutation.target.parentElement;
+      let target = mutation.target;
+      if (target.nodeType !== Node.ELEMENT_NODE) {
+          target = target.parentElement;
+      }
+      
       if (target) {
-        const aiResponse = target.closest('model-response');
-        if (aiResponse) processMessage(aiResponse, 'read');
+        const userQuery = target.closest('user-query, .user-query');
+        if (userQuery) {
+            processNodeMutation(userQuery, 'asked');
+        } else {
+            const aiResponse = target.closest('model-response, .model-response');
+            if (aiResponse) {
+                processNodeMutation(aiResponse, 'read');
+            }
+        }
       }
     }
   });
 });
 
-observer.observe(document.documentElement, {
+// Start observing as soon as body is available or fallback to document element
+const targetToObserve = document.body || document.documentElement;
+observer.observe(targetToObserve, {
   childList: true,
   subtree: true,
   characterData: true
