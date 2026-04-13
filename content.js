@@ -30,8 +30,8 @@ function getCleanText(element, type) {
   }
 
   const clone = contentEl.cloneNode(true);
-  // Remove UI elements like buttons, SVGs, hidden elements
-  const unwanted = clone.querySelectorAll('button, svg, img, [aria-hidden="true"], .visually-hidden, a');
+  // Remove UI elements like buttons, SVGs, hidden elements, media, and attachments
+  const unwanted = clone.querySelectorAll('button, svg, img, video, audio, figure, iframe, canvas, [aria-hidden="true"], .visually-hidden, a, .file-attachment, .uploaded-file, .attachment-container, file-preview');
   unwanted.forEach(el => el.remove());
 
   return clone.textContent || "";
